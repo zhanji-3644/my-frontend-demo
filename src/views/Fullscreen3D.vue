@@ -120,7 +120,7 @@ onMounted(() => {
   updateSunLight()
 
   const loader = new GLTFLoader()
-  loader.load('/models/ac.glb',
+  loader.load(import.meta.env.BASE_URL + 'models/ac.glb',
     (gltf) => {
       const model = gltf.scene
       const box = new THREE.Box3().setFromObject(model)
