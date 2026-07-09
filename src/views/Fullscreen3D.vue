@@ -84,7 +84,7 @@ onMounted(() => {
   scene = new THREE.Scene()
   scene.background = new THREE.Color(0xf5f5f5)
 
-  camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 50)
+  camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 200)
   camera.position.set(4, 3, 6)
 
   renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true })
@@ -133,7 +133,7 @@ onMounted(() => {
   window.renderer = renderer
 
   const loader = new GLTFLoader()
-  loader.load(import.meta.env.BASE_URL + 'models/ac.gltf',
+  loader.load(import.meta.env.BASE_URL + 'models/ac.glb',
     (gltf) => {
       const model = gltf.scene
       const box = new THREE.Box3().setFromObject(model)

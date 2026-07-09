@@ -190,7 +190,7 @@ onMounted(() => {
   scene = new THREE.Scene()
   scene.background = new THREE.Color(0xf5f5f5)
 
-  camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 50)
+  camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 500)
   camera.position.set(17.38, 18.58, 22.1)
 
   renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true })
@@ -209,6 +209,8 @@ onMounted(() => {
   controls = new OrbitControls(camera, renderer.domElement)
   controls.enableDamping = true
   controls.dampingFactor = 0.1
+  controls.minDistance = 5
+  controls.maxDistance = 80
   controls.target.set(0, 0, 0)
   controls.update()
 
@@ -219,11 +221,11 @@ onMounted(() => {
   sunLight.shadow.mapSize.width = 2048
   sunLight.shadow.mapSize.height = 2048
   sunLight.shadow.camera.near = 0.5
-  sunLight.shadow.camera.far = 40
-  sunLight.shadow.camera.left = -12
-  sunLight.shadow.camera.right = 12
-  sunLight.shadow.camera.top = 12
-  sunLight.shadow.camera.bottom = -12
+  sunLight.shadow.camera.far = 100
+  sunLight.shadow.camera.left = -20
+  sunLight.shadow.camera.right = 20
+  sunLight.shadow.camera.top = 20
+  sunLight.shadow.camera.bottom = -20
   sunLight.shadow.bias = -0.0003
   sunLight.shadow.normalBias = 0.02
   scene.add(sunLight)
