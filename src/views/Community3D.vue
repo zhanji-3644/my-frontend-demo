@@ -29,7 +29,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import * as THREE from 'three'
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 
 const canvasContainer = ref(null)
@@ -37,7 +37,7 @@ const currentStep = ref(24)
 const perf = ref({ fps: 0, draws: 0, tris: '0' })
 
 let renderer, scene, camera, controls, animationId
-let sunLight, modelGroup
+let sunLight, buildingGroup
 let perfFrames = 0
 let perfTime = performance.now()
 
@@ -76,6 +76,112 @@ function onSliderInput(e) {
   updateSunLight()
 }
 
+function createBuildingsMerged(layout) {
+  const bodyGroups = {}
+  const windowGeos = []
+  const windowMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3, emissive: 0x222222, emissiveIntensity: 0.1 })
+
+  layout.forEach(b => {
+    const key = '0x' + b.color.toString(16).padStart(6, '0')
+    if (!bodyGroups[key]) {
+      bodyGroups[key] = { geos: [], mat: new THREE.MeshStandardMaterial({ color: b.color, roughness: 0.6, metalness: 0.1 }) }
+    }
+
+    const bodyGeo = new THREE.BoxGeometry(b.w, b.h, b.d)
+    bodyGeo.translate(b.x, b.h / 2, b.z)
+    bodyGroups[key].geos.push(bodyGeo)
+
+    const floors = Math.max(1, Math.floor((b.h - 0.3) / 0.35))
+    for (let f = 0; f < floors; f++) {
+      const wy = 0.45 + f * 0.35
+
+      const winGeoF = new THREE.PlaneGeometry(b.w * 0.5, 0.15)
+      winGeoF.translate(b.x, wy, b.z + b.d / 2 + 0.01)
+      windowGeos.push(winGeoF)
+
+      const winGeoB = new THREE.PlaneGeometry(b.w * 0.5, 0.15)
+      winGeoB.rotateY(Math.PI)
+      winGeoB.translate(b.x, wy, b.z - b.d / 2 - 0.01)
+      windowGeos.push(winGeoB)
+
+      const winGeoR = new THREE.PlaneGeometry(b.d * 0.5, 0.15)
+      winGeoR.rotateY(Math.PI / 2)
+      winGeoR.translate(b.x + b.w / 2 + 0.01, wy, b.z)
+      windowGeos.push(winGeoR)
+
+      const winGeoL = new THREE.PlaneGeometry(b.d * 0.5, 0.15)
+      winGeoL.rotateY(-Math.PI / 2)
+      winGeoL.translate(b.x - b.w / 2 - 0.01, wy, b.z)
+      windowGeos.push(winGeoL)
+    }
+  })
+
+  const buildingGroup = new THREE.Group()
+
+  for (const [color, group] of Object.entries(bodyGroups)) {
+    const mergedGeo = mergeGeometries(group.geos)
+    const mesh = new THREE.Mesh(mergedGeo, group.mat)
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    buildingGroup.add(mesh)
+  }
+
+  if (windowGeos.length > 0) {
+    const winMerged = mergeGeometries(windowGeos)
+    const winMesh = new THREE.Mesh(winMerged, windowMat)
+    buildingGroup.add(winMesh)
+  }
+
+  return buildingGroup
+}
+
+function createMapGround() {
+  const group = new THREE.Group()
+
+  const groundGeo = new THREE.PlaneGeometry(16, 14)
+  const groundMat = new THREE.MeshStandardMaterial({ color: 0xe8e0d4, roughness: 0.9 })
+  const ground = new THREE.Mesh(groundGeo, groundMat)
+  ground.rotation.x = -Math.PI / 2
+  ground.position.y = -0.05
+  ground.receiveShadow = true
+  group.add(ground)
+
+  const greenGeo = new THREE.PlaneGeometry(15, 13)
+  const greenMat = new THREE.MeshStandardMaterial({ color: 0xc8d8b0, roughness: 0.95 })
+  const green = new THREE.Mesh(greenGeo, greenMat)
+  green.rotation.x = -Math.PI / 2
+  green.position.y = 0
+  green.receiveShadow = true
+  group.add(green)
+
+  const roadMat = new THREE.MeshStandardMaterial({ color: 0x999999, roughness: 0.8 })
+  const roadGeos = [
+    { geo: new THREE.PlaneGeometry(14.5, 0.6), pos: [0, -3.5] },
+    { geo: new THREE.PlaneGeometry(14.5, 0.6), pos: [0, 3.5] },
+    { geo: new THREE.PlaneGeometry(14.5, 0.6), pos: [0, 0] },
+    { geo: new THREE.PlaneGeometry(0.6, 13), pos: [-5, 0] },
+    { geo: new THREE.PlaneGeometry(0.6, 13), pos: [5, 0] },
+  ]
+  roadGeos.forEach(r => {
+    r.geo.rotateX(-Math.PI / 2)
+    r.geo.translate(r.pos[0], 0.01, r.pos[1])
+  })
+  const roadMerged = mergeGeometries(roadGeos.map(r => r.geo))
+  const roadMesh = new THREE.Mesh(roadMerged, roadMat)
+  roadMesh.receiveShadow = true
+  group.add(roadMesh)
+
+  const borderLine = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.PlaneGeometry(16, 14)),
+    new THREE.LineBasicMaterial({ color: 0x666666 })
+  )
+  borderLine.rotation.x = -Math.PI / 2
+  borderLine.position.y = 0.02
+  group.add(borderLine)
+
+  return group
+}
+
 onMounted(() => {
   const container = canvasContainer.value
   const w = window.innerWidth
@@ -85,7 +191,7 @@ onMounted(() => {
   scene.background = new THREE.Color(0xf5f5f5)
 
   camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 50)
-  camera.position.set(4, 3, 6)
+  camera.position.set(10, 8, 12)
 
   renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true })
   renderer.setSize(w, h)
@@ -103,6 +209,8 @@ onMounted(() => {
   controls = new OrbitControls(camera, renderer.domElement)
   controls.enableDamping = true
   controls.dampingFactor = 0.1
+  controls.target.set(0, 0, 0)
+  controls.update()
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.35))
 
@@ -111,12 +219,12 @@ onMounted(() => {
   sunLight.shadow.mapSize.width = 2048
   sunLight.shadow.mapSize.height = 2048
   sunLight.shadow.camera.near = 0.5
-  sunLight.shadow.camera.far = 30
-  sunLight.shadow.camera.left = -6
-  sunLight.shadow.camera.right = 6
-  sunLight.shadow.camera.top = 6
-  sunLight.shadow.camera.bottom = -6
-  sunLight.shadow.bias = -0.0005
+  sunLight.shadow.camera.far = 40
+  sunLight.shadow.camera.left = -12
+  sunLight.shadow.camera.right = 12
+  sunLight.shadow.camera.top = 12
+  sunLight.shadow.camera.bottom = -12
+  sunLight.shadow.bias = -0.0003
   sunLight.shadow.normalBias = 0.02
   scene.add(sunLight)
   scene.add(sunLight.target)
@@ -125,50 +233,35 @@ onMounted(() => {
   const hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x362907, 0.4)
   scene.add(hemiLight)
 
-  modelGroup = new THREE.Group()
-  scene.add(modelGroup)
+  const mapGround = createMapGround()
+  scene.add(mapGround)
+
+  const layout = [
+    { x: -3.5, z: -5.5, w: 0.6, d: 1.0, h: 2.4, color: 0xd4b896 },
+    { x: -1.8, z: -5.5, w: 0.6, d: 1.0, h: 3.0, color: 0xc9b896 },
+    { x:  0.0, z: -5.5, w: 0.6, d: 1.0, h: 2.1, color: 0xd4c4a0 },
+    { x:  1.8, z: -5.5, w: 0.6, d: 1.0, h: 2.7, color: 0xccc09a },
+    { x:  3.5, z: -5.5, w: 0.6, d: 1.0, h: 3.3, color: 0xd0bc94 },
+
+    { x: -3.5, z: -1.8, w: 0.6, d: 1.0, h: 3.0, color: 0xd4b896 },
+    { x: -1.8, z: -1.8, w: 0.6, d: 1.0, h: 2.4, color: 0xc9b896 },
+    { x:  0.0, z: -1.8, w: 0.6, d: 1.0, h: 2.7, color: 0xd4c4a0 },
+    { x:  1.8, z: -1.8, w: 0.6, d: 1.0, h: 3.3, color: 0xccc09a },
+    { x:  3.5, z: -1.8, w: 0.6, d: 1.0, h: 2.1, color: 0xd0bc94 },
+
+    { x: -3.5, z:  1.8, w: 0.6, d: 1.0, h: 2.7, color: 0xd4b896 },
+    { x: -1.8, z:  1.8, w: 0.6, d: 1.0, h: 3.3, color: 0xc9b896 },
+    { x:  0.0, z:  1.8, w: 0.6, d: 1.0, h: 2.4, color: 0xd4c4a0 },
+    { x:  1.8, z:  1.8, w: 0.6, d: 1.0, h: 2.1, color: 0xccc09a },
+    { x:  3.5, z:  1.8, w: 0.6, d: 1.0, h: 3.0, color: 0xd0bc94 },
+
+    { x:  0.0, z:  5.5, w: 1.2, d: 1.2, h: 5.0, color: 0xd4c4a0 },
+  ]
+
+  buildingGroup = createBuildingsMerged(layout)
+  scene.add(buildingGroup)
 
   updateSunLight()
-
-  window.renderer = renderer
-
-  const loader = new GLTFLoader()
-  loader.load(import.meta.env.BASE_URL + 'models/ac.gltf',
-    (gltf) => {
-      const model = gltf.scene
-      const box = new THREE.Box3().setFromObject(model)
-      const center = box.getCenter(new THREE.Vector3())
-      const size = box.getSize(new THREE.Vector3())
-      const maxDim = Math.max(size.x, size.y, size.z)
-      const scale = 3 / maxDim
-      model.scale.setScalar(scale)
-      model.position.set(-center.x * scale, -center.y * scale, -center.z * scale)
-
-      model.traverse((child) => {
-        if (child.isMesh) {
-          child.castShadow = true
-          child.receiveShadow = true
-        }
-      })
-
-      modelGroup.add(model)
-
-      const worldBox = new THREE.Box3().setFromObject(modelGroup)
-      const worldCenter = worldBox.getCenter(new THREE.Vector3())
-      controls.target.copy(worldCenter)
-      controls.update()
-
-      const worldSize = worldBox.getSize(new THREE.Vector3())
-      const extent = Math.max(worldSize.x, worldSize.y, worldSize.z) * 0.8
-      sunLight.shadow.camera.left = -extent
-      sunLight.shadow.camera.right = extent
-      sunLight.shadow.camera.top = extent
-      sunLight.shadow.camera.bottom = -extent
-      updateSunLight()
-    },
-    undefined,
-    (error) => console.error('Failed to load ac.glb:', error)
-  )
 
   function animate() {
     animationId = requestAnimationFrame(animate)

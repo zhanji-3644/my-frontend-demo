@@ -45,7 +45,7 @@
           <div class="card-bg card-bg-inner"></div>
           <div class="card-label">立面日照</div>
         </div>
-        <div class="sun-card" @click="$router.push('/three-view')">
+        <div class="sun-card" @click="$router.push('/community-three')">
           <div class="card-bg card-bg-outer"></div>
           <div class="card-label">小区日照</div>
         </div>
