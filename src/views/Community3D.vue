@@ -191,7 +191,7 @@ onMounted(() => {
   scene.background = new THREE.Color(0xf5f5f5)
 
   camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 50)
-  camera.position.set(10, 8, 12)
+  camera.position.set(17.38, 18.58, 22.1)
 
   renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true })
   renderer.setSize(w, h)
