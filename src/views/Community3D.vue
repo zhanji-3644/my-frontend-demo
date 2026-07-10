@@ -6,6 +6,7 @@
       </svg>
     </div>
     <div ref="canvasContainer" class="canvas-full"></div>
+    <div ref="labelContainer" class="label-container"></div>
     <div class="perf-panel">
       <div class="perf-row">FPS <span>{{ perf.fps }}</span></div>
       <div class="perf-row">Draws <span>{{ perf.draws }}</span></div>
@@ -31,15 +32,20 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js'
 
 const canvasContainer = ref(null)
+const labelContainer = ref(null)
 const currentStep = ref(24)
+const selectedIndex = ref(-1)
 const perf = ref({ fps: 0, draws: 0, tris: '0' })
 
-let renderer, scene, camera, controls, animationId
-let sunLight, buildingGroup
+let renderer, labelRenderer, scene, camera, controls, animationId
+let sunLight, overlayGroup, wireframeGroup, clickTargets = []
+let canvasEl
 let perfFrames = 0
 let perfTime = performance.now()
+let raycaster, mouse
 
 function toRad(d) { return d * Math.PI / 180 }
 
@@ -52,6 +58,30 @@ for (let t = 0; t <= 48; t++) {
 }
 
 const timeLabel = computed(() => timeSteps[currentStep.value]?.label || '12:00')
+
+const FLOOR_HEIGHT = 0.3
+
+const buildingsConfig = [
+  { id: '1#',  x: -3.5, z: -5.5, w: 0.6, d: 1.0, floors: 8,  color: 0xd4b896, shape: 'rect' },
+  { id: '2#',  x: -1.8, z: -5.5, w: 0.6, d: 1.0, floors: 10, color: 0xc9b896, shape: 'rect' },
+  { id: '3#',  x:  0.0, z: -5.5, w: 0.6, d: 1.0, floors: 7,  color: 0xd4c4a0, shape: 'rect' },
+  { id: '4#',  x:  1.8, z: -5.5, w: 0.6, d: 1.0, floors: 9,  color: 0xccc09a, shape: 'rect' },
+  { id: '5#',  x:  3.5, z: -5.5, w: 0.6, d: 1.0, floors: 11, color: 0xd0bc94, shape: 'rect' },
+
+  { id: '6#',  x: -3.5, z: -1.8, w: 0.6, d: 1.0, floors: 10, color: 0xd4b896, shape: 'rect' },
+  { id: '7#',  x: -1.8, z: -1.8, w: 0.6, d: 1.0, floors: 8,  color: 0xc9b896, shape: 'rect' },
+  { id: '8#',  x:  0.0, z: -1.8, w: 0.6, d: 1.0, floors: 9,  color: 0xd4c4a0, shape: 'rect' },
+  { id: '9#',  x:  1.8, z: -1.8, w: 0.6, d: 1.0, floors: 11, color: 0xccc09a, shape: 'rect' },
+  { id: '10#', x:  3.5, z: -1.8, w: 0.6, d: 1.0, floors: 7,  color: 0xd0bc94, shape: 'rect' },
+
+  { id: '11#', x: -3.5, z:  1.8, w: 0.6, d: 1.0, floors: 9,  color: 0xd4b896, shape: 'rect' },
+  { id: '12#', x: -1.8, z:  1.8, w: 0.6, d: 1.0, floors: 11, color: 0xc9b896, shape: 'rect' },
+  { id: '13#', x:  0.0, z:  1.8, w: 0.6, d: 1.0, floors: 8,  color: 0xd4c4a0, shape: 'rect' },
+  { id: '14#', x:  1.8, z:  1.8, w: 0.6, d: 1.0, floors: 7,  color: 0xccc09a, shape: 'rect' },
+  { id: '15#', x:  3.5, z:  1.8, w: 0.6, d: 1.0, floors: 10, color: 0xd0bc94, shape: 'rect' },
+
+  { id: '16#', x:  0.0, z:  5.5, w: 1.2, d: 1.2, floors: 17, color: 0xd4c4a0, shape: 'rect' },
+]
 
 function sunPosition(totalMin) {
   const t = (totalMin - 8 * 60) / (8 * 60)
@@ -76,23 +106,83 @@ function onSliderInput(e) {
   updateSunLight()
 }
 
-function createBuildingsMerged(layout) {
+function selectBuilding(index) {
+  selectedIndex.value = index
+  overlayGroup.clear()
+  wireframeGroup.clear()
+
+  if (index < 0 || index >= buildingsConfig.length) return
+
+  const grayMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35, depthTest: true, depthWrite: false })
+  const grayOverlay = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.4, depthTest: true, depthWrite: false })
+
+  buildingsConfig.forEach((b, i) => {
+    if (i === index) return
+    const h = b.floors * FLOOR_HEIGHT
+    const geo = new THREE.BoxGeometry(b.w + 0.05, h + 0.05, b.d + 0.05)
+    geo.translate(b.x, h / 2, b.z)
+    const mesh = new THREE.Mesh(geo, grayMat)
+    mesh.renderOrder = 1
+    mesh.material.depthTest = true
+    mesh.material.depthWrite = false
+    overlayGroup.add(mesh)
+  })
+
+  const sel = buildingsConfig[index]
+  const sh = sel.floors * FLOOR_HEIGHT
+  const edgeGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(sel.w + 0.08, sh + 0.08, sel.d + 0.08))
+  edgeGeo.translate(sel.x, sh / 2, sel.z)
+  const edgeLine = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0xff6600, linewidth: 2, depthTest: true }))
+  wireframeGroup.add(edgeLine)
+
+  const fillGeo = new THREE.BoxGeometry(sel.w + 0.04, sh + 0.04, sel.d + 0.04)
+  fillGeo.translate(sel.x, sh / 2, sel.z)
+  const fillMesh = new THREE.Mesh(fillGeo, new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.15, depthTest: true, depthWrite: false }))
+  fillMesh.renderOrder = 1
+  wireframeGroup.add(fillMesh)
+}
+
+function clearSelection() {
+  selectedIndex.value = -1
+  overlayGroup.clear()
+  wireframeGroup.clear()
+}
+
+function onCanvasClick(event) {
+  if (!renderer || !camera) return
+
+  const rect = renderer.domElement.getBoundingClientRect()
+  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+
+  raycaster.setFromCamera(mouse, camera)
+  const intersects = raycaster.intersectObjects(clickTargets)
+  if (intersects.length > 0) {
+    const idx = clickTargets.indexOf(intersects[0].object)
+    if (idx >= 0) selectBuilding(idx)
+  } else {
+    clearSelection()
+  }
+}
+
+function createBuildingsMerged(config) {
   const bodyGroups = {}
   const windowGeos = []
   const windowMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3, emissive: 0x222222, emissiveIntensity: 0.1 })
 
-  layout.forEach(b => {
+  config.forEach(b => {
+    const h = b.floors * FLOOR_HEIGHT
     const key = '0x' + b.color.toString(16).padStart(6, '0')
     if (!bodyGroups[key]) {
       bodyGroups[key] = { geos: [], mat: new THREE.MeshStandardMaterial({ color: b.color, roughness: 0.6, metalness: 0.1 }) }
     }
 
-    const bodyGeo = new THREE.BoxGeometry(b.w, b.h, b.d)
-    bodyGeo.translate(b.x, b.h / 2, b.z)
+    const bodyGeo = new THREE.BoxGeometry(b.w, h, b.d)
+    bodyGeo.translate(b.x, h / 2, b.z)
     bodyGroups[key].geos.push(bodyGeo)
 
-    const floors = Math.max(1, Math.floor((b.h - 0.3) / 0.35))
-    for (let f = 0; f < floors; f++) {
+    const winFloors = Math.max(1, Math.floor((h - 0.3) / 0.35))
+    for (let f = 0; f < winFloors; f++) {
       const wy = 0.45 + f * 0.35
 
       const winGeoF = new THREE.PlaneGeometry(b.w * 0.5, 0.15)
@@ -133,6 +223,23 @@ function createBuildingsMerged(layout) {
   }
 
   return buildingGroup
+}
+
+function createLabels(config) {
+  const group = new THREE.Group()
+
+  config.forEach(b => {
+    const h = b.floors * FLOOR_HEIGHT
+    const div = document.createElement('div')
+    div.className = 'building-label'
+    div.textContent = b.id + ' ' + b.floors + 'F'
+
+    const label = new CSS2DObject(div)
+    label.position.set(b.x, h + 0.3, b.z)
+    group.add(label)
+  })
+
+  return group
 }
 
 function createMapGround() {
@@ -184,6 +291,8 @@ function createMapGround() {
 
 onMounted(() => {
   const container = canvasContainer.value
+  canvasEl = container
+  const lblContainer = labelContainer.value
   const w = window.innerWidth
   const h = window.innerHeight
 
@@ -202,9 +311,24 @@ onMounted(() => {
   renderer.toneMappingExposure = 1
   container.appendChild(renderer.domElement)
 
+  labelRenderer = new CSS2DRenderer()
+  labelRenderer.setSize(w, h)
+  labelRenderer.domElement.style.position = 'absolute'
+  labelRenderer.domElement.style.top = '0'
+  labelRenderer.domElement.style.left = '0'
+  labelRenderer.domElement.style.pointerEvents = 'none'
+  lblContainer.appendChild(labelRenderer.domElement)
+
   window.scene = scene
   window.renderer = renderer
   window.camera = camera
+
+  raycaster = new THREE.Raycaster()
+  mouse = new THREE.Vector2()
+  overlayGroup = new THREE.Group()
+  wireframeGroup = new THREE.Group()
+  scene.add(overlayGroup)
+  scene.add(wireframeGroup)
 
   controls = new OrbitControls(camera, renderer.domElement)
   controls.enableDamping = true
@@ -238,30 +362,22 @@ onMounted(() => {
   const mapGround = createMapGround()
   scene.add(mapGround)
 
-  const layout = [
-    { x: -3.5, z: -5.5, w: 0.6, d: 1.0, h: 2.4, color: 0xd4b896 },
-    { x: -1.8, z: -5.5, w: 0.6, d: 1.0, h: 3.0, color: 0xc9b896 },
-    { x:  0.0, z: -5.5, w: 0.6, d: 1.0, h: 2.1, color: 0xd4c4a0 },
-    { x:  1.8, z: -5.5, w: 0.6, d: 1.0, h: 2.7, color: 0xccc09a },
-    { x:  3.5, z: -5.5, w: 0.6, d: 1.0, h: 3.3, color: 0xd0bc94 },
-
-    { x: -3.5, z: -1.8, w: 0.6, d: 1.0, h: 3.0, color: 0xd4b896 },
-    { x: -1.8, z: -1.8, w: 0.6, d: 1.0, h: 2.4, color: 0xc9b896 },
-    { x:  0.0, z: -1.8, w: 0.6, d: 1.0, h: 2.7, color: 0xd4c4a0 },
-    { x:  1.8, z: -1.8, w: 0.6, d: 1.0, h: 3.3, color: 0xccc09a },
-    { x:  3.5, z: -1.8, w: 0.6, d: 1.0, h: 2.1, color: 0xd0bc94 },
-
-    { x: -3.5, z:  1.8, w: 0.6, d: 1.0, h: 2.7, color: 0xd4b896 },
-    { x: -1.8, z:  1.8, w: 0.6, d: 1.0, h: 3.3, color: 0xc9b896 },
-    { x:  0.0, z:  1.8, w: 0.6, d: 1.0, h: 2.4, color: 0xd4c4a0 },
-    { x:  1.8, z:  1.8, w: 0.6, d: 1.0, h: 2.1, color: 0xccc09a },
-    { x:  3.5, z:  1.8, w: 0.6, d: 1.0, h: 3.0, color: 0xd0bc94 },
-
-    { x:  0.0, z:  5.5, w: 1.2, d: 1.2, h: 5.0, color: 0xd4c4a0 },
-  ]
-
-  buildingGroup = createBuildingsMerged(layout)
+  const buildingGroup = createBuildingsMerged(buildingsConfig)
   scene.add(buildingGroup)
+
+  buildingsConfig.forEach(b => {
+    const h = b.floors * FLOOR_HEIGHT
+    const clickGeo = new THREE.BoxGeometry(b.w, h, b.d)
+    const clickMesh = new THREE.Mesh(clickGeo, new THREE.MeshBasicMaterial({ visible: false }))
+    clickMesh.position.set(b.x, h / 2, b.z)
+    clickTargets.push(clickMesh)
+    scene.add(clickMesh)
+  })
+
+  const labelGroup = createLabels(buildingsConfig)
+  scene.add(labelGroup)
+
+  container.addEventListener('click', onCanvasClick)
 
   updateSunLight()
 
@@ -269,6 +385,7 @@ onMounted(() => {
     animationId = requestAnimationFrame(animate)
     controls.update()
     renderer.render(scene, camera)
+    labelRenderer.render(scene, camera)
 
     perfFrames++
     const now = performance.now()
@@ -296,11 +413,13 @@ function onResize() {
   camera.aspect = w / h
   camera.updateProjectionMatrix()
   renderer.setSize(w, h)
+  labelRenderer.setSize(w, h)
 }
 
 onUnmounted(() => {
   cancelAnimationFrame(animationId)
   window.removeEventListener('resize', onResize)
+  canvasEl?.removeEventListener('click', onCanvasClick)
   controls?.dispose()
   renderer?.dispose()
   delete window.scene
@@ -315,6 +434,26 @@ onUnmounted(() => {
   inset: 0;
   z-index: 200;
   background: #f5f5f5;
+}
+
+.label-container {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
+:deep(.building-label) {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: #333;
+  background: rgba(255,255,255,0.85);
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+  pointer-events: none;
 }
 
 .back-btn {
